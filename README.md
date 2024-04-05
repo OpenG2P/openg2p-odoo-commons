@@ -23,7 +23,7 @@ Available addons
 ----------------
 addon | version | maintainers | summary
 --- | --- | --- | ---
-[g2p_change_log](g2p_change_log/) | 17.0.1.0.0 |  | OpenG2P Change Log
+[g2p_change_log](g2p_change_log/) | 17.0.1.2.0 |  | OpenG2P Change Log
 
 [//]: # (end addons)
 
