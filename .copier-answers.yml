@@ -14,11 +14,10 @@ odoo_version: 17.0
 org_name: OpenG2P
 org_slug: openg2p
 rebel_module_groups: []
-repo_description: OpenG2P Registry is an open source project that provides a social
-    registry that can be used on top of Odoo.
-repo_name: OpenG2P Registry
-repo_slug: openg2p-registry
-repo_website: https://github.com/openg2p/openg2p-registry
+repo_description: OpenG2P Odoo-Commons is an open source project that provides a 
+    Odoo-Commons modules that can be used on top of Odoo.
+repo_name: OpenG2P Odoo-commons
+repo_slug: openg2p-Odoo-commons
+repo_website: https://github.com/OpenG2P/openg2p-odoo-commons
 travis_apt_packages: []
 travis_apt_sources: []
-
