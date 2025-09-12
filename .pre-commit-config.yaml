@@ -52,7 +52,7 @@ repos:
       - id: oca-gen-addon-readme
         args:
           - --addons-dir=.
-          - --branch=17.0-develop
+          - --branch=develop
           - --org-name=OpenG2P
           - --repo-name=openg2p-odoo-commons
           - --if-source-changed
