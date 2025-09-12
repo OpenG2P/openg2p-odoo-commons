@@ -3,7 +3,7 @@ import hashlib
 import json
 import logging
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from urllib.request import urlopen
 
 import requests
@@ -43,20 +43,22 @@ class AuthOauthProvider(models.Model):
         help="Leave blank to use token endpoint for Client Assertion Aud.",
     )
 
+    logout_uri = fields.Char(string="Logout URL", help="The URL to redirect to upon logout")
+
     client_authentication_method = fields.Selection(
         [
             ("client_secret_basic", "Client Secret (Basic)"),
             ("client_secret_post", "Client Secret (Post)"),
             # ("client_secret_jwt", "Signed Client Secret (JWT)"), # Not implemented
             ("private_key_jwt", "Private Key JWT"),
-            ("none", "None"),
         ],
-        required=True,
+        required=False,
         default="client_secret_post",
     )
     client_secret = fields.Char()
     client_private_key = fields.Binary(attachment=False)
 
+    enable_pkce = fields.Boolean(default=True)
     code_verifier = fields.Char("PKCE Code Verifier", default=lambda self: secrets.token_urlsafe(32))
 
     token_map = fields.Char(
@@ -137,14 +139,15 @@ class AuthOauthProvider(models.Model):
         if not oidc_redirect_uri:
             oidc_redirect_uri = request.httprequest.base_url
 
-        if self.client_authentication_method == "none":
+        if not self.client_authentication_method:
             token_request_data = dict(
                 client_id=self.client_id,
                 grant_type="authorization_code",
                 code=code,
-                code_verifier=self.code_verifier,
                 redirect_uri=oidc_redirect_uri,
             )
+            if self.enable_pkce:
+                token_request_data["code_verifier"] = self.code_verifier
             response = requests.post(self.token_endpoint, data=token_request_data, timeout=10)
             response.raise_for_status()
             response_json = response.json()
@@ -155,9 +158,10 @@ class AuthOauthProvider(models.Model):
                 client_id=self.client_id,
                 grant_type="authorization_code",
                 code=code,
-                code_verifier=self.code_verifier,
                 redirect_uri=oidc_redirect_uri,
             )
+            if self.enable_pkce:
+                token_request_data["code_verifier"] = self.code_verifier
             response = requests.post(
                 self.token_endpoint,
                 auth=token_request_auth,
@@ -173,9 +177,10 @@ class AuthOauthProvider(models.Model):
                 client_secret=self.client_secret,
                 grant_type="authorization_code",
                 code=code,
-                code_verifier=self.code_verifier,
                 redirect_uri=oidc_redirect_uri,
             )
+            if self.enable_pkce:
+                token_request_data["code_verifier"] = self.code_verifier
             response = requests.post(self.token_endpoint, data=token_request_data, timeout=10)
             response.raise_for_status()
             response_json = response.json()
@@ -188,9 +193,10 @@ class AuthOauthProvider(models.Model):
                 client_assertion=private_key_jwt,
                 grant_type="authorization_code",
                 code=code,
-                code_verifier=self.code_verifier,
                 redirect_uri=oidc_redirect_uri,
             )
+            if self.enable_pkce:
+                token_request_data["code_verifier"] = self.code_verifier
             response = requests.post(self.token_endpoint, data=token_request_data, timeout=10)
             response.raise_for_status()
             response_json = response.json()
@@ -204,8 +210,8 @@ class AuthOauthProvider(models.Model):
                 "iss": self.client_id,
                 "sub": self.client_id,
                 "aud": self.jwt_assertion_aud or self.token_endpoint,
-                "exp": datetime.now(timezone.utc) + timedelta(hours=1),
-                "iat": datetime.now(timezone.utc),
+                "exp": datetime.now() + timedelta(hours=1),
+                "iat": datetime.now(),
             },
             secret,
             algorithm="RS256",
@@ -268,12 +274,22 @@ class AuthOauthProvider(models.Model):
     def map_validation_values(self, validation, params):
         res = {}
         if self.token_map and self.token_map.strip():
-            if self.token_map.endswith("*:*"):
+            token_map: str = self.token_map
+            token_map = token_map.strip()
+            if token_map.endswith("*:*"):
+                token_map = token_map.removesuffix("*:*").strip()
                 res = validation
-            for pair in self.token_map.strip().split(" "):
+            for pair in token_map.split(" "):
                 if pair:
                     from_key, to_key = (k.strip() for k in pair.split(":", 1))
-                    res[to_key] = validation.get(from_key, "")
+                    if len(from_key.split(".")) <= 1:
+                        res[to_key] = validation.get(from_key)
+                    else:
+                        from_keys = from_key.split(".")
+                        to_val = validation
+                        for from_key in from_keys:
+                            to_val = to_val.get(from_key, {})
+                        res[to_key] = to_val
         return res
 
     def oidc_signin_create_user(self, validation, params, oauth_partner=None, access_denied_exception=None):
@@ -394,9 +410,11 @@ class AuthOauthProvider(models.Model):
         return validation
 
     def oidc_signin_process_gender(self, validation, params, oauth_partner=None, oauth_user=None):
-        gender = validation.get("gender", "").capitalize()
+        gender = validation.get("gender")
         if gender:
-            validation["gender"] = gender
+            validation["gender"] = gender.capitalize()
+        elif "gender" in validation:
+            validation.pop("gender")
         return validation
 
     def oidc_signin_process_birthdate(self, validation, params, oauth_partner=None, oauth_user=None):
@@ -448,7 +466,7 @@ class AuthOauthProvider(models.Model):
             if isinstance(self.env[fields_model]._fields.get(key), fields._String) and isinstance(
                 value, dict | list
             ):
-                validation[key] = json.dumps(value)
+                validation[key] = json.dumps(value) if value else None
         if self.company_id and validation.get("company_id") != self.company_id.id:
             validation["company_id"] = self.company_id.id
         return validation
@@ -486,15 +504,12 @@ class AuthOauthProvider(models.Model):
             )
             flow = provider.get("flow")
             if flow and flow.startswith("oidc"):
-                params.update(
-                    dict(
-                        nonce=secrets.token_urlsafe(),
-                        code_challenge=base64.urlsafe_b64encode(
-                            hashlib.sha256(provider["code_verifier"].encode("ascii")).digest()
-                        ).rstrip(b"="),
-                        code_challenge_method="S256",
-                    )
-                )
+                params["nonce"] = secrets.token_urlsafe()
+                if provider.get("enable_pkce"):
+                    params["code_challenge"] = base64.urlsafe_b64encode(
+                        hashlib.sha256(provider["code_verifier"].encode("ascii")).digest()
+                    ).rstrip(b"=")
+                    params["code_challenge_method"] = "S256"
             extra_auth_params = json.loads(provider.get("extra_authorize_params") or "{}")
             params.update(extra_auth_params)
             provider["auth_link"] = f"{provider['auth_endpoint']}?{url_encode(params)}"
